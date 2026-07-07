@@ -12,6 +12,7 @@
 #include "compiler.h"
 #include "host.h"
 #include "log.h"
+#include "rev.h"
 
 #include "ccan/autodata/autodata.h"
 
@@ -159,14 +160,37 @@ void host_destroy(struct host *ctx)
 
 struct ahb *host_get_ahb(struct host *ctx)
 {
-	struct bridge *bridge;
+	struct bridge *bridge, *fallback = NULL;
 
-	bridge = list_top(&ctx->bridges, struct bridge, entry);
+	/*
+	 * Prefer a bridge that can actually read a recognised SoC revision.
+	 *
+	 * A backdoor's probe() can succeed (the driver initialises) yet the
+	 * bridge may not reach the AHB on a given board: e.g. the iLPC2AHB
+	 * bridge on a board where the LPC-to-AHB backdoor is disabled reads
+	 * back 0xffffffff for every address. Without this check the selection
+	 * order can hand back such a dead bridge and soc_probe() then fails
+	 * even though a working bridge (e.g. P2A) was also discovered. Observed
+	 * on the AST2050 (ASUS KGPE-D16): P2A works, iLPC is disabled.
+	 */
+	list_for_each(&ctx->bridges, bridge, entry) {
+		if (!fallback)
+			fallback = bridge;
 
-	if (bridge) {
-		logd("Accessing the BMC's AHB via the %s bridge\n",
+		if (rev_probe(bridge->ahb) >= 0) {
+			logd("Accessing the BMC's AHB via the %s bridge\n",
+			     bridge->driver->name);
+			return bridge->ahb;
+		}
+
+		logd("Bridge %s cannot reach a recognised SoC, trying next\n",
 		     bridge->driver->name);
-		return bridge->ahb;
+	}
+
+	if (fallback) {
+		logd("No bridge reached a recognised SoC; falling back to the %s bridge\n",
+		     fallback->driver->name);
+		return fallback->ahb;
 	}
 
 	loge("Bridge discovery failed, cannot access BMC AHB\n");
