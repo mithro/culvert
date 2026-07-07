@@ -20,6 +20,27 @@ cpp_cmd = [
 dtc_cmd = [dtc_prog, '@INPUT@', '-O', 'dtb', '-o', '@OUTPUT@']
 ld_cmd = [ld_prog, '-r', '-b', 'binary', '@INPUT@', '-o', '@OUTPUT@']
 
+g3_dts_i = custom_target(
+    'g3_dts',
+    input: 'g3.dts',
+    output: 'g3.dts.i',
+    command: cpp_cmd,
+)
+
+g3_dtb = custom_target(
+    'g3_dtb',
+    input: g3_dts_i,
+    output: 'g3.dtb',
+    command: dtc_cmd,
+)
+
+g3_dtbo = custom_target(
+    'g3_dtbo',
+    input: g3_dtb,
+    output: 'g3.dtb.o',
+    command: ld_cmd,
+)
+
 g4_dts_i = custom_target(
     'g4_dts',
     input: 'g4.dts',
@@ -83,4 +104,4 @@ g6_dtbo = custom_target(
     command: ld_cmd,
 )
 
-dtbos = [g4_dtbo, g5_dtbo, g6_dtbo]
+dtbos = [g3_dtbo, g4_dtbo, g5_dtbo, g6_dtbo]

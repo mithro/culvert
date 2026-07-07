@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Tim Ansell
+
+/dts-v1/;
+
+/*
+ * ASPEED AST2050 / AST1100 (G3) device tree for culvert.
+ *
+ * The AST2050 predates mainline and culvert's original G4/G5/G6 support. It is
+ * register-compatible enough with the AST2400 (G4) that this repo already builds
+ * its Linux device tree on aspeed-g4.dtsi, so the peripheral nodes below reuse
+ * the "aspeed,ast2400-*" bindings (which is what selects culvert's existing
+ * drivers) while the top-level compatible identifies the SoC as an AST2050.
+ *
+ * Differences from the AST2400 that still need dedicated handling are called out
+ * inline (DDR2 memory controller, P2A register layout). The AST2050 has NO
+ * hardware UART debug bridge (that is AST2500-only), so no debug bridge node.
+ *
+ * Register bases verified against the in-repo AST2050/AST1100 A3 datasheet and
+ * asus-kgpe-d16-firmware/{ast2050.h,hwreg.h}.
+ */
+
+/ {
+	compatible = "aspeed,ast2050", "aspeed,ast2400";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	aliases {
+		vuart = &vuart;
+		wdt1 = &wdt1;
+		wdt2 = &wdt2;
+		jtag = &jtag;
+	};
+
+	// AST2050: up to 64 MB DDR2 at 0x40000000 on the boards we target
+	// (KGPE-D16 / C410X). Kept at 512 MB span to match the AST2400 window.
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x40000000 0x20000000>;
+	};
+
+	ahb {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		sram: sram@1e720000 {
+			compatible = "mmio-sram";
+			reg = <0x1e720000 0x8000>;	// 32K
+		};
+
+		bus-controller@1e600000 {
+			compatible = "aspeed,ast2400-ahb-controller";
+			reg = <0x1e600000 0x20000>;
+
+			memory-region-names = "trace-buffer";
+			memory-region = <&sram>;
+		};
+
+		apb {
+			compatible = "simple-bus";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			// AST2050 SDMC is a DDR/DDR2 controller (not DDR3 as on
+			// the AST2400). Register-compatible for probe/dump; DDR2
+			// timing decode differs -- TODO refine.
+			sdmc: memory-controller@1e6e0000 {
+				compatible = "aspeed,ast2400-sdram-controller";
+				reg = <0x1e6e0000 0x174>;
+			};
+
+			syscon: syscon@1e6e2000 {
+				compatible = "aspeed,ast2400-scu", "syscon", "simple-mfd";
+				reg = <0x1e6e2000 0x1a8>;
+
+				clock {
+					compatible = "aspeed,ast2400-clock";
+				};
+
+				strapping {
+					compatible = "aspeed,ast2400-strapping";
+				};
+
+				superio {
+					compatible = "aspeed,ast2400-superio";
+				};
+
+				// P2A (P-Bus -> AHB) back door. On the AST2050 the
+				// control/window regs live at MMIOBASE+F000h/F004h
+				// (datasheet section 36), reached via the VGA PCI
+				// function 1A03:2000 -- different from the AST2400.
+				// TODO: dedicated aspeed,ast2050 pciectl offsets.
+				bridge-controller {
+					compatible = "aspeed,ast2400-pcie-device-controller", "bridge-controller";
+				};
+			};
+
+			jtag: jtag@1e6e4000 {
+				compatible = "aspeed,ast2400-jtag";
+				reg = <0x1e6e4000 0x20>;
+			};
+
+			wdt1: watchdog@1e785000 {
+				compatible = "aspeed,ast2400-wdt";
+				reg = <0x1e785000 0x20>;
+			};
+
+			wdt2: watchdog@1e785020 {
+				compatible = "aspeed,ast2400-wdt";
+				reg = <0x1e785020 0x20>;
+			};
+
+			vuart: serial@1e787000 {
+				compatible = "aspeed,ast2400-vuart";
+				reg = <0x1e787000 0x40>;
+			};
+
+			// LPC-to-AHB bridge (iLPC2AHB): HICR5[8] ENL2H etc.
+			// (datasheet HICR5-8) -- present on the AST2050.
+			lpc: lpc@1e789000 {
+				compatible = "aspeed,ast2400-lpc-v2", "syscon", "simple-mfd";
+				reg = <0x1e789000 0x1000>;
+
+				bridge-controller {
+					compatible = "aspeed,ast2400-ilpc-ahb-bridge", "bridge-controller";
+				};
+			};
+		};
+	};
+};

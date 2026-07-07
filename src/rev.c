@@ -16,6 +16,13 @@ struct bmc_silicon_rev {
 };
 
 static const struct bmc_silicon_rev ast_silicon_revs[] = {
+	/*
+	 * AST2050/AST1100 (G3). Unlike G4+ the silicon-revision-id top byte is
+	 * 0x00 (the generation nibble), so the value is small. 0x00000202 is what
+	 * a real AST2050 on the ASUS KGPE-D16 reports in SCU07C (captured over
+	 * P2A, 2026-07-08).
+	 */
+	{ 0x00000202, "AST2050/AST1100" },
 	{ 0x02000303, "AST2400 A0" }, { 0x02010303, "AST2400 A1" },
 	{ 0x04000303, "AST2500 A0" }, { 0x04010303, "AST2500 A1" },
 	{ 0x04030303, "AST2500 A2" }, { 0x05000303, "AST2600 A0" },
@@ -104,6 +111,20 @@ int64_t rev_probe(struct ahb *ahb)
 	 */
 	is_g6 = !((probe[0] >> 28) & 0xf) && !((probe[1] >> 24) & 0xff);
 
+	/*
+	 * The AST2050/AST1100 (G3) aliases the g6 fingerprint above: on the
+	 * AST2050 SCU07C is the Silicon Revision ID Register with a top byte of
+	 * 0x00 (the generation), e.g. 0x00000202, and SCU004 is the System Reset
+	 * Control Register whose top nibble also reads 0x00. Distinguish it from
+	 * the AST2600 by SCU004[31:24]: that is the reserved AST2600 silicon
+	 * revision value 0x05, but 0x00 on the AST2050. On the AST2050 the true
+	 * silicon revision id is simply SCU07C (as on the AST2400/AST2500).
+	 */
+	if (is_g6 && (((probe[0] >> 24) & 0xff) != 0x05)) {
+		logd("SCU004 top byte is not the AST2600 signature; treating as G3\n");
+		is_g6 = false;
+	}
+
 	/* Based on the above observations, extract the true silicon revision ID */
 	if (is_g6) {
 		/*
@@ -161,6 +182,7 @@ const char *rev_name(uint32_t rev)
 }
 
 static const uint8_t bmc_silicon_gens[] = {
+	[ast_g3] = 0x00,
 	[ast_g4] = 0x02,
 	[ast_g5] = 0x04,
 	[ast_g6] = 0x05,
@@ -169,6 +191,8 @@ static const uint8_t bmc_silicon_gens[] = {
 enum ast_generation rev_generation(uint32_t rev)
 {
 	switch ((rev >> 24) & 0xff) {
+	case 0x00:
+		return ast_g3;
 	case 0x02:
 		return ast_g4;
 	case 0x04:

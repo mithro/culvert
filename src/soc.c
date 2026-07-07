@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2021 IBM Corp.
 
+#include "devicetree/g3.h"
 #include "devicetree/g4.h"
 #include "devicetree/g5.h"
 #include "devicetree/g6.h"
@@ -21,6 +22,10 @@
 #include <stdio.h>
 
 static const struct soc_fdt soc_fdts[] = {
+	[ast_g3] = {
+		.start = &_binary_src_devicetree_g3_dtb_start,
+		.end = &_binary_src_devicetree_g3_dtb_end,
+	},
 	[ast_g4] = {
 		.start = &_binary_src_devicetree_g4_dtb_start,
 		.end = &_binary_src_devicetree_g4_dtb_end,
@@ -58,7 +63,8 @@ static int soc_align_fdt(struct soc *ctx, const struct soc_fdt *fdt)
 int soc_from_rev(struct soc *ctx, struct ahb *ahb, uint32_t rev)
 {
 	/* TODO: Map rev to the SoC compatible and find compatible devicetree */
-	if (!(rev_is_generation(rev, ast_g4) ||
+	if (!(rev_is_generation(rev, ast_g3) ||
+	      rev_is_generation(rev, ast_g4) ||
 	      rev_is_generation(rev, ast_g5) ||
 	      rev_is_generation(rev, ast_g6))) {
 		loge("Found unsupported SoC generation: 0x%08" PRIx32 "\n",
