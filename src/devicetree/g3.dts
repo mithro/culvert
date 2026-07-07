@@ -29,7 +29,15 @@
 		vuart = &vuart;
 		wdt1 = &wdt1;
 		wdt2 = &wdt2;
-		jtag = &jtag;
+		/*
+		 * No jtag alias: the AST2050 has no internal JTAG master. Its
+		 * datasheet documents only an external ICE debug interface
+		 * (§2.1) and has nothing at 0x1e6e4000 (register bases jump
+		 * 0x1e6e2000 SCU -> 0x1e6e3000). culvert's software JTAG
+		 * (internal JTAG master routed to the ARM via SCU MISC_CTRL) is
+		 * an AST2400+ feature. AST2050 ARM debug uses the external
+		 * AST_JTAG1 header + OpenOCD (see RPI4-OPENOCD-JTAG-WIRING.md).
+		 */
 	};
 
 	// AST2050: up to 64 MB DDR2 at 0x40000000 on the boards we target
@@ -101,10 +109,8 @@
 				// The P2A *transport* is unaffected (host-side bridge/p2a.c).
 			};
 
-			jtag: jtag@1e6e4000 {
-				compatible = "aspeed,ast2400-jtag";
-				reg = <0x1e6e4000 0x20>;
-			};
+			// No jtag@1e6e4000 node: absent on the AST2050 (see the
+			// aliases comment above) -- external ICE debug only.
 
 			wdt1: watchdog@1e785000 {
 				compatible = "aspeed,ast2400-wdt";
