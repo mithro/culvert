@@ -18,6 +18,14 @@
 #define LPC_HICRB_ILPC_DIS (1 << 29)
 #define LPC_HICRB_ILPC_RO  (1 << 6)
 
+/*
+ * The AST2050 (G3) has no HICRB. Its LPC-to-AHB bridge is gated directly by
+ * HICR5[8] ENL2H (datasheet: "Enable LPC to AHB bridge") and has no read-only
+ * mode. See asus-kgpe-d16-firmware/CULVERT-UART-JTAG-DEBUG.md §3.2.
+ */
+#define LPC_HICR5	   0x080
+#define LPC_HICR5_ENL2H	   (1 << 8)
+
 struct ilpcctl {
 	struct bridgectl ctl;
 	struct soc *soc;
@@ -252,7 +260,63 @@ static const struct bridgectl_ops ast2600_ilpcctl_ops = {
 	.report = ilpcctl_report,
 };
 
+static int ast2050_ilpcctl_enforce(struct bridgectl *bridge,
+				   enum bridge_mode mode)
+{
+	struct ilpcctl *ctx = to_ilpcctl(bridge);
+	uint32_t hicr5;
+	int rc;
+
+	/* The AST2050 iLPC2AHB bridge has no read-only mode. */
+	if (mode == bm_restricted)
+		return -ENOTSUP;
+
+	if ((rc = soc_readl(ctx->soc, ctx->lpc.start + LPC_HICR5, &hicr5)) < 0) {
+		loge("Failed to read LPC HICR5: %d\n", rc);
+		return rc;
+	}
+
+	if (mode == bm_disabled)
+		hicr5 &= ~LPC_HICR5_ENL2H;
+	else
+		hicr5 |= LPC_HICR5_ENL2H;
+
+	if ((rc = soc_writel(ctx->soc, ctx->lpc.start + LPC_HICR5, hicr5)) < 0) {
+		loge("Failed to write LPC HICR5: %d\n", rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+static int ast2050_ilpcctl_status(struct bridgectl *bridge,
+				  enum bridge_mode *mode)
+{
+	struct ilpcctl *ctx = to_ilpcctl(bridge);
+	uint32_t hicr5;
+	int rc;
+
+	if ((rc = soc_readl(ctx->soc, ctx->lpc.start + LPC_HICR5, &hicr5)) < 0) {
+		loge("Failed to read LPC HICR5: %d\n", rc);
+		return rc;
+	}
+
+	/* No read-only mode on G3: the bridge is either open or off. */
+	*mode = (hicr5 & LPC_HICR5_ENL2H) ? bm_permissive : bm_disabled;
+
+	return 0;
+}
+
+static const struct bridgectl_ops ast2050_ilpcctl_ops = {
+	.name = ilpcctl_name,
+	.enforce = ast2050_ilpcctl_enforce,
+	.status = ast2050_ilpcctl_status,
+	.report = ilpcctl_report,
+};
+
 static const struct soc_device_id ilpcctl_matches[] = {
+	{ .compatible = "aspeed,ast2050-ilpc-ahb-bridge",
+	  .data = &ast2050_ilpcctl_ops },
 	{ .compatible = "aspeed,ast2400-ilpc-ahb-bridge",
 	  .data = &ast2400_ilpcctl_ops },
 	{ .compatible = "aspeed,ast2500-ilpc-ahb-bridge",
