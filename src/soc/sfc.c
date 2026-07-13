@@ -45,6 +45,20 @@
 #define SMC_CE0_CTRL 0x10
 #define SMC_TIMING   0x94
 
+/*
+ * Legacy SMC (AST2050/AST1100 "G3"), datasheet section 11. Control block at
+ * 0x16000000; the boot SPI NOR is on CE2 (data mapped at 0x14000000 =
+ * PHYS_FLASH_1). This is a different controller from the AST2400+ FMC/SMC
+ * above: config at 0x00 (CE type + segment, reset 0x240), per-CE control at
+ * 0x04/0x08/0x0C. Per-CE control [1:0] selects the command mode (00 = Normal
+ * Read 03h, 11 = User mode); bit2 releases/asserts CE# in user mode. See
+ * qemu-model peripherals/smc/DOC.md and CULVERT-G3-HARDWARE-RESULTS.md.
+ */
+#define G3SMC_CONF	0x00
+#define G3SMC_CE0_CTRL	0x04
+#define G3SMC_CE1_CTRL	0x08
+#define G3SMC_CE2_CTRL	0x0c
+
 struct sfc_data {
 	struct soc *soc;
 	struct soc_region iomem;
@@ -939,6 +953,50 @@ static bool sfc_init_device(struct sfc_data *ct)
 	return true;
 }
 
+/*
+ * Legacy SMC (G3) init. Unlike sfc_init_device() above (AST2400+ FMC/SMC),
+ * this controller has no FMC-style write-protect bits at [18:16] of a type
+ * register and no fast-read calibration timing register, so we must not poke
+ * those. We keep CE2 in Normal Read mode (03h) as the resting state; each
+ * command enters/leaves User mode via the shared sfc_start_cmd()/sfc_end_cmd()
+ * helpers, which drive the per-CE control [2:0] (bit2 = CE# stop, [1:0] =
+ * command mode) -- the ASPEED SMC-family encoding also used by the FMC path.
+ *
+ * NB: the CE#-stop bit (bit2) is the ASPEED SMC-family convention; the G3
+ * datasheet (peripherals/smc/DOC.md) documents [1:0] cmd-mode, [5] MSB-first
+ * and [10:8] clock explicitly. The user-mode 03h+addr read sequence itself is
+ * hardware-attested in CULVERT-G3-HARDWARE-RESULTS.md, but a full dump could
+ * not be verified on the dead-BMC bench there (the mapped window read 0 -- a
+ * transport limitation, not a driver bug). This path is exercised for a board
+ * with a live SMC serving the CE2 flash window.
+ */
+static bool sfc_g3smc_init_device(struct sfc_data *ct)
+{
+	uint32_t ctl;
+	int rc;
+
+	rc = sfc_readl(ct, ct->ctl_reg, &ctl);
+	if (rc < 0 || ctl == 0xffffffff) {
+		SFC_ERR("AST_SF: Failed to read legacy SMC CE2 control\n");
+		return false;
+	}
+
+	/* Resting state: Normal Read command mode ([1:0]=00), CE# released. */
+	ct->ctl_val = 0;
+	ct->ctl_read_val = ct->ctl_val;
+	ct->fread_timing_val = 0;
+	ct->mode_4b = false;
+
+	rc = sfc_writel(ct, ct->ctl_reg, ct->ctl_read_val);
+	if (rc < 0) {
+		errno = -rc;
+		perror("sfc_writel");
+		return false;
+	}
+
+	return true;
+}
+
 int sfc_write_protect_save(struct sfc *ctrl, bool enable, uint32_t *save)
 {
 	struct sfc_data *ct = container_of(ctrl, struct sfc_data, ops);
@@ -992,6 +1050,7 @@ int sfc_get_flash(struct sfc *ctrl, struct soc_region *flash)
 static const struct soc_device_id sfc_match[] = {
 	{ .compatible = "aspeed,ast2500-fmc", .data = (void *)SFC_TYPE_FMC },
 	{ .compatible = "aspeed,ast2500-spi", .data = (void *)SFC_TYPE_SMC },
+	{ .compatible = "aspeed,ast2050-smc", .data = (void *)SFC_TYPE_G3SMC },
 	{},
 };
 
@@ -1054,12 +1113,28 @@ static int sfc_driver_init(struct soc *soc, struct soc_device *dev)
 		ct->type_wp_mask = (FMC_CE_TYPE_CE0_WP | FMC_CE_TYPE_CE1_WP);
 		ct->ctl_reg = FMC_CE0_CTRL;
 		ct->fread_timing_reg = FMC_TIMING;
+	} else if (ct->type == SFC_TYPE_G3SMC) {
+		/*
+		 * Legacy SMC: boot SPI NOR on CE2. No FMC-style write-protect
+		 * bits and no fast-read timing register on this controller, so
+		 * leave write-protect a no-op (mask 0) and don't touch a timing
+		 * register. Command sequencing uses the CE2 control register.
+		 */
+		ct->type_reg = G3SMC_CONF;
+		ct->type_wp_mask = 0;
+		ct->ctl_reg = G3SMC_CE2_CTRL;
+		ct->fread_timing_reg = 0;
 	} else {
 		rc = -EINVAL;
 		goto fail;
 	}
 
-	if (!sfc_init_device(ct)) {
+	if (ct->type == SFC_TYPE_G3SMC) {
+		if (!sfc_g3smc_init_device(ct)) {
+			rc = -EIO;
+			goto fail;
+		}
+	} else if (!sfc_init_device(ct)) {
 		rc = -EIO;
 		goto fail;
 	}

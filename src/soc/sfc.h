@@ -11,6 +11,8 @@
 
 #define SFC_TYPE_FMC 1U
 #define SFC_TYPE_SMC 2U
+/* Legacy SMC on the AST2050/AST1100 (G3), datasheet section 11 */
+#define SFC_TYPE_G3SMC 3U
 
 /* Flash commands */
 #define CMD_BE		   0xd8 /* Block (64K) Erase */

@@ -30,6 +30,12 @@
 		wdt1 = &wdt1;
 		wdt2 = &wdt2;
 		/*
+		 * culvert's read/write commands look up the boot flash by the
+		 * "fmc" alias. On the AST2050 that is the legacy SMC's CE2
+		 * (boot SPI NOR), so point "fmc" at the SMC node below.
+		 */
+		fmc = &smc;
+		/*
 		 * No jtag alias: the AST2050 has no internal JTAG master. Its
 		 * datasheet documents only an external ICE debug interface
 		 * (§2.1) and has nothing at 0x1e6e4000 (register bases jump
@@ -83,6 +89,20 @@
 			sdmc: memory-controller@1e6e0000 {
 				compatible = "aspeed,ast2050-sdram-controller";
 				reg = <0x1e6e0000 0x174>;
+			};
+
+			// Legacy SMC (SPI flash controller), datasheet section 11.
+			// Control block at 0x16000000; the boot SPI NOR is on CE2,
+			// data-mapped at 0x14000000 (= PHYS_FLASH_1 in
+			// asus-kgpe-d16-firmware/ast2050.h), a 32 MB segment per
+			// SMC00 = 0x240. This is NOT the AST2400 FMC (0x1e620000,
+			// data 0x20000000); src/soc/sfc.c drives it via a dedicated
+			// aspeed,ast2050-smc (legacy user-mode) path. reg index 0 =
+			// control block, index 1 = CE2 flash data window.
+			smc: flash-controller@16000000 {
+				compatible = "aspeed,ast2050-smc";
+				reg = <0x16000000 0x20
+				       0x14000000 0x02000000>;
 			};
 
 			syscon: syscon@1e6e2000 {
