@@ -71,11 +71,14 @@
 			#address-cells = <1>;
 			#size-cells = <1>;
 
-			// AST2050 SDMC is a DDR/DDR2 controller (not DDR3 as on
-			// the AST2400). Register-compatible for probe/dump; DDR2
-			// timing decode differs -- TODO refine.
+			// AST2050 SDMC is a DDR2 controller (not DDR3 as on the
+			// AST2400). The MCR04 geometry fields sit at different bit
+			// positions than the AST2400 (capacity [3:2], VGA [5:4]),
+			// so use the dedicated aspeed,ast2050-sdram-controller
+			// binding that decodes them (src/soc/sdmc.c). e.g. Raptor's
+			// MCR04 = 0x585 -> 64 MB, not the 128 MB the AST2400 path gives.
 			sdmc: memory-controller@1e6e0000 {
-				compatible = "aspeed,ast2400-sdram-controller";
+				compatible = "aspeed,ast2050-sdram-controller";
 				reg = <0x1e6e0000 0x174>;
 			};
 

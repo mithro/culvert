@@ -13,6 +13,16 @@ struct sdmc_pdata {
 	const uint32_t (*dram_sizes)[4];
 	const uint32_t (*vram_sizes)[4];
 	const uint32_t gmp_xdma_mask;
+	/*
+	 * Bit position of the MCR04 total-capacity field (indexes dram_sizes)
+	 * and of the VGA-aperture field (indexes vram_sizes). The AST2400/2500/
+	 * 2600 DDR3 controllers place capacity at MCR04[1:0] and the VGA
+	 * aperture at MCR04[3:2]. The AST2050 (G3) DDR2 controller shifts both
+	 * up: capacity is MCR04[3:2], VGA aperture is MCR04[5:4] (AST2050/AST1100
+	 * A3 datasheet section 17, pp.185-186; see qemu-model .../sdram/DOC.md).
+	 */
+	unsigned int dram_conf_shift;
+	unsigned int vram_conf_shift;
 };
 
 struct sdmc {
@@ -40,6 +50,35 @@ static const struct sdmc_pdata ast2400_sdmc_pdata = {
 	.dram_sizes = &ast2400_dram_sizes,
 	.vram_sizes = &ast_vram_sizes,
 	.gmp_xdma_mask = BIT(16),
+	.dram_conf_shift = 0,
+	.vram_conf_shift = 2,
+};
+
+/*
+ * AST2050 (G3) DDR2 total-capacity table, indexed by MCR04[3:2]:
+ * 00 = <=32M, 01 = 64M, 10 = 128M, 11 = 256M (datasheet section 17 p185-186).
+ * Worked example: Raptor's soldered value MCR04 = 0x585 -> [3:2] = 01 -> 64 MB
+ * (matches PHYS_SDRAM_1_SIZE = 0x4000000 in asus-kgpe-d16-firmware/ast2050.h).
+ * The AST2400 DDR3 path would mis-read the same value's [1:0] = 01 as 128 MB.
+ */
+static const uint32_t ast2050_dram_sizes[4] = {
+	[0b00] = 32 << 20,
+	[0b01] = 64 << 20,
+	[0b10] = 128 << 20,
+	[0b11] = 256 << 20,
+};
+
+static const struct sdmc_pdata ast2050_sdmc_pdata = {
+	.dram_sizes = &ast2050_dram_sizes,
+	.vram_sizes = &ast_vram_sizes,
+	/*
+	 * The AST2050 P2A/XDMA constraint bit in MCR_GMP is not modelled here
+	 * (its P2A posture is a separate SCU2C[8] gate, see pciectl.c); leave
+	 * the XDMA mask clear so sdmc_{constrains,configure}_xdma are no-ops.
+	 */
+	.gmp_xdma_mask = 0,
+	.dram_conf_shift = 2,
+	.vram_conf_shift = 4,
 };
 
 static const uint32_t ast2500_dram_sizes[4] = {
@@ -53,6 +92,8 @@ static const struct sdmc_pdata ast2500_sdmc_pdata = {
 	.dram_sizes = &ast2500_dram_sizes,
 	.vram_sizes = &ast_vram_sizes,
 	.gmp_xdma_mask = BIT(17),
+	.dram_conf_shift = 0,
+	.vram_conf_shift = 2,
 };
 
 static const uint32_t ast2600_dram_sizes[4] = {
@@ -66,6 +107,8 @@ static const struct sdmc_pdata ast2600_sdmc_pdata = {
 	.dram_sizes = &ast2600_dram_sizes,
 	.vram_sizes = &ast_vram_sizes,
 	.gmp_xdma_mask = BIT(18) | BIT(25),
+	.dram_conf_shift = 0,
+	.vram_conf_shift = 2,
 };
 
 static int sdmc_readl(struct sdmc *ctx, uint32_t off, uint32_t *val)
@@ -82,7 +125,8 @@ static void sdmc_dram_region(struct sdmc *ctx, uint32_t mcr_conf,
 			     struct soc_region *dram)
 {
 	dram->start = ctx->dram.start;
-	dram->length = (*ctx->pdata->dram_sizes)[mcr_conf & 3];
+	dram->length = (*ctx->pdata->dram_sizes)
+		[(mcr_conf >> ctx->pdata->dram_conf_shift) & 3];
 }
 
 int sdmc_get_dram(struct sdmc *ctx, struct soc_region *dram)
@@ -109,7 +153,8 @@ int sdmc_get_vram(struct sdmc *ctx, struct soc_region *vram)
 
 	sdmc_dram_region(ctx, mcr_conf, &dram);
 
-	vram->length = (*ctx->pdata->vram_sizes)[(mcr_conf >> 2) & 3];
+	vram->length = (*ctx->pdata->vram_sizes)
+		[(mcr_conf >> ctx->pdata->vram_conf_shift) & 3];
 	vram->start = dram.start + dram.length - vram->length;
 
 	return 0;
@@ -146,6 +191,8 @@ int sdmc_configure_xdma(struct sdmc *ctx, bool constrain)
 }
 
 static const struct soc_device_id sdmc_match[] = {
+	{ .compatible = "aspeed,ast2050-sdram-controller",
+	  .data = &ast2050_sdmc_pdata },
 	{ .compatible = "aspeed,ast2400-sdram-controller",
 	  .data = &ast2400_sdmc_pdata },
 	{ .compatible = "aspeed,ast2500-sdram-controller",
