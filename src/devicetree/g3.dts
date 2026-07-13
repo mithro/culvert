@@ -40,11 +40,14 @@
 		 */
 	};
 
-	// AST2050: up to 64 MB DDR2 at 0x40000000 on the boards we target
-	// (KGPE-D16 / C410X). Kept at 512 MB span to match the AST2400 window.
+	// AST2050: 64 MB DDR2 at 0x40000000 on the boards we target
+	// (KGPE-D16 / C410X), per PHYS_SDRAM_1_SIZE = 0x4000000 in
+	// asus-kgpe-d16-firmware/ast2050.h. This is only the fallback span:
+	// sdmc_get_dram() overrides the length from the live MCR04 geometry
+	// decode (see the aspeed,ast2050-sdram-controller node below).
 	memory@40000000 {
 		device_type = "memory";
-		reg = <0x40000000 0x20000000>;
+		reg = <0x40000000 0x04000000>;
 	};
 
 	ahb {
