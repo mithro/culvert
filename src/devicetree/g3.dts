@@ -101,18 +101,20 @@
 					compatible = "aspeed,ast2400-superio";
 				};
 
-				// NB: no pcie-device-controller (P2A posture) node here.
-				// culvert's pciectl is built around the G4/G5/G6 SCU
-				// PCIe-config register (SCU 0x180) + per-region write
-				// filters. The AST2050 has no such register: its P2A is
-				// gated by the P2A00 protection key (PCI-config space,
-				// MMIOBASE+F000h, datasheet section 36) plus SCU2C[8]
-				// "Disable PCI slave to AHB bus bridge". Binding the G4
-				// pciectl here read a register that is not the PCIe config
-				// on G3 and mis-reported "p2a: Disabled". Omitting the node
-				// avoids that false posture; an accurate AST2050 P2A
-				// posture driver (reading P2A00 / SCU2C[8]) is future work.
-				// The P2A *transport* is unaffected (host-side bridge/p2a.c).
+				// AST2050 P2A posture. Unlike the G4/G5/G6 pciectl
+				// (which reads the SCU PCIe-config register SCU180 +
+				// per-region write filters, none of which exist on G3),
+				// the aspeed,ast2050-pcie-device-controller path reports
+				// the P2A (PCI-slave -> AHB) bridge posture from the single
+				// BMC-side gate SCU2C[8] "Disable PCI slave to AHB bus
+				// bridge" (0 = enabled; datasheet section 18.2). The
+				// host-side P2A00 protection key lives in host PCI-config
+				// space (MMIOBASE+F000h, datasheet section 36), not the BMC
+				// AHB, so only SCU2C[8] is checkable from the BMC side. The
+				// P2A *transport* is separate (host-side bridge/p2a.c).
+				bridge-controller {
+					compatible = "aspeed,ast2050-pcie-device-controller", "bridge-controller";
+				};
 			};
 
 			// No jtag@1e6e4000 node: absent on the AST2050 (see the

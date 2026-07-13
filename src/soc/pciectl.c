@@ -27,6 +27,15 @@
 #define G5_SCU_MISC_P2A_FLASH_RO (1 << 22)
 #define G4_SCU_PCIE_CONFIG	 0x180
 #define G6_SCU_PCIE_CONFIG	 0xc20
+
+/*
+ * AST2050 (G3) has no SCU PCIe-config register (SCU180). The only BMC-side
+ * gate for the P2A (PCI-slave -> AHB) bridge is SCU2C[8] "Disable PCI slave to
+ * AHB bus bridge" (reg 0x1e6e202c, 0 = enabled). AST2050/AST1100 A3 datasheet
+ * section 18.2 p214; qemu-model peripherals/p2a/DOC.md sections 1 and 2.2.
+ */
+#define G3_SCU_MISC2		 0x02c
+#define G3_SCU_MISC2_P2A_DIS	 (1 << 8)
 #define SCU_PCIE_CONFIG_BMC_XDMA (1 << 14)
 #define SCU_PCIE_CONFIG_BMC_MMIO (1 << 9)
 #define SCU_PCIE_CONFIG_BMC	 (1 << 8)
@@ -77,6 +86,13 @@ struct pciectl_pdata {
 	uint32_t config;
 	const struct pciectl_endpoint *endpoints;
 	const struct pciectl_p2a_region *regions;
+	/*
+	 * AST2050 (G3) posture path: a single SCU2C[8] gate instead of the
+	 * G4/G5/G6 SCU PCIe-config register + per-region write filters. When
+	 * set, the driver registers only the p2a bridgectl (ast2050_p2actl_ops)
+	 * and does not touch SCU180/misc, endpoints or regions.
+	 */
+	bool g3;
 };
 
 struct pciectl {
@@ -539,6 +555,88 @@ static const struct bridgectl_ops xdmactl_ops = {
 	.report = xdmactl_report,
 };
 
+/*
+ * AST2050 (G3) P2A posture. The G4/G5/G6 machinery above reads the SCU
+ * PCIe-config register (SCU180) and per-region write filters, none of which
+ * exist on the AST2050. The BMC side has exactly one observable gate for the
+ * PCI-slave -> AHB (P2A) bridge: SCU2C[8] (0 = enabled). No read-only mode.
+ *
+ * The host-side P2A00[0] protection key that also gates the aperture lives in
+ * host PCI-config space (MMIOBASE+0xF000, datasheet section 36), not on the
+ * BMC AHB, so it is not observable from culvert on the BMC side -- only
+ * SCU2C[8] is. See qemu-model peripherals/p2a/DOC.md.
+ */
+static int ast2050_p2actl_status(struct bridgectl *bridge,
+				 enum bridge_mode *mode)
+{
+	struct pciectl *ctx = p2actl_to_pciectl(bridge);
+	uint32_t scu2c;
+	int rc;
+
+	if ((rc = soc_readl(ctx->soc, ctx->scu.start + G3_SCU_MISC2, &scu2c)) <
+	    0) {
+		loge("Failed to read SCU2C: %d\n", rc);
+		return rc;
+	}
+
+	*mode = (scu2c & G3_SCU_MISC2_P2A_DIS) ? bm_disabled : bm_permissive;
+
+	return 0;
+}
+
+static int ast2050_p2actl_enforce(struct bridgectl *bridge,
+				  enum bridge_mode mode)
+{
+	struct pciectl *ctx = p2actl_to_pciectl(bridge);
+	uint32_t scu2c;
+	int rc;
+
+	/* The G3 P2A gate is a single enable bit: no read-only mode. */
+	if (mode == bm_restricted)
+		return -ENOTSUP;
+
+	if ((rc = soc_readl(ctx->soc, ctx->scu.start + G3_SCU_MISC2, &scu2c)) <
+	    0) {
+		loge("Failed to read SCU2C: %d\n", rc);
+		return rc;
+	}
+
+	if (mode == bm_disabled)
+		scu2c |= G3_SCU_MISC2_P2A_DIS;
+	else
+		scu2c &= ~G3_SCU_MISC2_P2A_DIS;
+
+	if ((rc = soc_writel(ctx->soc, ctx->scu.start + G3_SCU_MISC2, scu2c)) <
+	    0) {
+		loge("Failed to write SCU2C: %d\n", rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+static int ast2050_p2actl_report(struct bridgectl *bridge, int fd,
+				 enum bridge_mode *mode)
+{
+	int rc;
+
+	if ((rc = ast2050_p2actl_status(bridge, mode)) < 0) {
+		loge("Failed to read P2A bridge status: %d\n", rc);
+		return rc;
+	}
+
+	bridgectl_log_status(bridge, fd, *mode);
+
+	return 0;
+}
+
+static const struct bridgectl_ops ast2050_p2actl_ops = {
+	.name = p2actl_name,
+	.enforce = ast2050_p2actl_enforce,
+	.status = ast2050_p2actl_status,
+	.report = ast2050_p2actl_report,
+};
+
 static const struct pciectl_p2a_region ast2400_p2a_regions[] = {
 	{
 		.name = "Firmware",
@@ -788,7 +886,13 @@ static const struct pciectl_pdata ast2600_pdata = {
 	.regions = ast2500_p2a_regions,
 };
 
+static const struct pciectl_pdata ast2050_pdata = {
+	.g3 = true,
+};
+
 static const struct soc_device_id pciectl_matches[] = {
+	{ .compatible = "aspeed,ast2050-pcie-device-controller",
+	  .data = &ast2050_pdata },
 	{ .compatible = "aspeed,ast2400-pcie-device-controller",
 	  .data = &ast2400_pdata },
 	{ .compatible = "aspeed,ast2500-pcie-device-controller",
@@ -812,15 +916,33 @@ static int pciectl_driver_init(struct soc *soc, struct soc_device *dev)
 		goto cleanup_ctx;
 	}
 
+	ctx->soc = soc;
+	ctx->dev = dev;
+	ctx->pdata =
+		soc_device_get_match_data(soc, pciectl_matches, &dev->node);
+
+	/*
+	 * AST2050 (G3): a single SCU2C[8] P2A gate -- no SCU180 config, no XDMA
+	 * region filters and no SDMC XDMA constraint. Register just the p2a
+	 * bridgectl with the G3 ops and return.
+	 */
+	if (ctx->pdata->g3) {
+		soc_device_set_drvdata(dev, ctx);
+
+		if ((rc = soc_bridge_controller_register(
+			     soc, p2actl_as_bridgectl(ctx),
+			     &ast2050_p2actl_ops)) < 0) {
+			goto cleanup_drvdata;
+		}
+
+		return 0;
+	}
+
 	if (!(ctx->sdmc = sdmc_get(soc))) {
 		loge("Failed to acquire SDMC controller\n");
 		goto cleanup_ctx;
 	}
 
-	ctx->soc = soc;
-	ctx->dev = dev;
-	ctx->pdata =
-		soc_device_get_match_data(soc, pciectl_matches, &dev->node);
 	if (ctx->pdata == &ast2600_pdata) {
 		ctx->bridges = bridges_get_by_device(soc, dev);
 		if (!ctx->bridges) {
